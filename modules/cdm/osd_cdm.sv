@@ -18,7 +18,7 @@
 import dii_package::dii_flit;
 
 module osd_cdm
-  #(parameter CORE_REG_STALL    =  0, // logic '1' causes the CPU core to stall.
+  #(parameter CORE_CTRL         =  0, // logic '1' causes the CPU core to stall.
     parameter CORE_REG_UPPER    =  0, // MSB bit-set of the required SPR address
     )
    (
@@ -151,10 +151,10 @@ module osd_cdm
 	 end //STATE_ADDR
        STATE_STALL_CPU: begin
            if (reg_write == 0) begin
-              reg_rdata = 16'(CORE_REG);
+              reg_rdata = 16'(CORE_CTRL);
            end else begin
               CORE_REG = reg_wdata;
-              du_stall_i = CORE_REG;
+              du_stall_i = CORE_CTRL;
            end
            nxt_state = STATE_ACK;
          end //STATE_STALL_CPU
