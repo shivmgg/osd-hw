@@ -19,7 +19,7 @@ import dii_package::dii_flit;
 
 module osd_cdm
   #(parameter CORE_CTRL         =  0, // logic '1' causes the CPU core to stall.
-    parameter CORE_REG_UPPER    =  0, // MSB bit-set of the required SPR address
+    parameter CORE_REG_UPPER    =  0 // MSB bit-set of the required SPR address
     )
    (
     input                         clk, rst,
@@ -38,7 +38,7 @@ module osd_cdm
     output reg [15:0]             du_adr_i, // Address of CPU register to be read or written
     output reg                    du_we_i, // Write cycle when true, read cycle when false
     output reg [31:0]             du_dat_i, // Write data
-    input reg [31:0]              du_dat_o, // Read data
+    input reg [31:0]              du_dat_o // Read data
    );
 
 
@@ -46,24 +46,24 @@ module osd_cdm
    logic        reg_write;
    logic [15:0] reg_addr;
    logic [1:0]  reg_size;
-   logic [31:0] reg_wdata; // Here, changes need to be made for dynamically changing the size of reg_wdata
+   logic [15:0] reg_wdata; // Here, changes need to be made for dynamically changing the size of reg_wdata
    logic        reg_ack;
    logic        reg_err;
-   logic [31:0] reg_rdata; // Here, changes need to be made for dynamically changing the size of reg_wdata
+   logic [15:0] reg_rdata; // Here, changes need to be made for dynamically changing the size of reg_wdata
 
    logic        stall;
 
-   logic    packet_ready;
-   logic    packet_data;
-   logic    packet_valid;
-
+   logic          packet_ready;
+   logic [15:0]   packet_data;
+   logic          packet_valid;
+   logic [15:0]   event_dest;
        
    dii_flit     dp_out, dp_in;
    logic        dp_out_ready, dp_in_ready;
 
    osd_regaccess_layer
      #(.MOD_VENDOR(16'h1), .MOD_TYPE(16'h6), .MOD_VERSION(16'h0),
-       .MAX_REG_SIZE(32), .CAN_STALL(0), .MOD_EVENT_DEST_DEFAULT(16'h0)))
+       .MAX_REG_SIZE(32), .CAN_STALL(0), .MOD_EVENT_DEST_DEFAULT(16'h0))
    u_regaccess(.*,
                .event_dest (),
                .module_in (dp_out),
@@ -72,7 +72,9 @@ module osd_cdm
                .module_out_ready (dp_in_ready));
 
    logic [15:0] spr_reg_addr;
-   
+   logic [15:0] core_ctrl = CORE_CTRL;
+   logic [15:0] core_reg_upper = CORE_REG_UPPER;
+
   //Debug STALL CPU event packets
   osd_event_packetization_fixedwidth
      #(.DATA_WIDTH(16), .MAX_PKT_LEN(4))
@@ -93,8 +95,8 @@ module osd_cdm
 
   enum {
          STATE_INACTIVE, STATE_REQ, STATE_ADDR, STATE_STALL_CPU, 
-         STATE_SPR_REQ, STATE_SPR_ADDR, STATE_SPR_READ, STATE_SPR_WRITE,
-         STATE_ACK
+         STATE_SPR_REQ, STATE_SPR_ADDR, STATE_SPR_READ, 
+         STATE_SPR_WRITE, STATE_ACK
        } state, nxt_state;
 
    always_ff @(posedge clk) begin
@@ -103,9 +105,11 @@ module osd_cdm
       end 
       else if (du_stall_o == 1'b1) begin 
          packet_valid <= 1'b1;
-         packet_data <= 16'h1;
-      end else begin
-         state <= nxt_state;
+         packet_data  <= 16'h1;
+      end else if (du_stall_o == 1'b0) begin
+         packet_data  <= 1'b0;
+         packet_valid <= 1'b0;
+         state        <= nxt_state;
       end
    end  
 
@@ -114,85 +118,88 @@ module osd_cdm
      reg_rdata = 16'hx;
      spr_reg_addr = 16'hx;
      case (state)
-     	STATE_INACTIVE: begin
+      STATE_INACTIVE: begin
            dp_in_ready = 1;
             if (dp_in.valid) begin
                nxt_state = STATE_REQ;
             end
          end //STATE_INACTIVE
-        STATE_REQ: begin
-           if (reg_request == 1) begin
-	      du_stb_i = 1'b1;
-              nxt_state = STATE_ADDR;
-           end
+      STATE_REQ: begin
+            if (reg_request == 1) begin
+	       du_stb_i = 1'b1;
+               nxt_state = STATE_ADDR;
+            end
          end //STATE_REQ
-        STATE_ADDR: begin
-           if (reg_addr[15:7] == 9'h4) begin  //0x200-0x201
+      STATE_ADDR: begin
+      	    if (reg_addr[15:7] == 9'h4) begin  //0x200-0x201
               case (reg_addr) 
                  16'h200: nxt_state = STATE_STALL_CPU;  
                  16'h201: begin 
                     if (reg_write == 1'b0) begin                              
-	               reg_rdata = 16'(CORE_REG_UPPER);
+	               reg_rdata = core_reg_upper;
                     end 
                     else if (reg_write == 1'b1) begin
-                       CORE_REG_UPPER = reg_wdata;
+                       core_reg_upper = reg_wdata;
                     end
-                   end  // case                  
+                   end  // case (16'h201)                  
 		 default: reg_err = 1'b1;
               endcase // case (reg_addr[15:7])
-           end    
-           else if (reg_addr[15] == 1) begin //0x8000-0xFFFF
+            end    
+            else if (reg_addr[15] == 1) begin //0x8000-0xFFFF
               spr_reg_addr = ((CORE_REG_UPPER << 15) | (reg_addr - 16'h8000));
-              nxt_state = STATE_SPR_REG;  
-           end else begin
+              nxt_state = STATE_SPR_REQ;  
+            end else begin
               reg_err = 1'b1;
               nxt_state = STATE_INACTIVE;
-           end
-	 end //STATE_ADDR
-       STATE_STALL_CPU: begin
-           if (reg_write == 0) begin
-              reg_rdata = 16'(CORE_CTRL);
-           end else begin
-              CORE_REG = reg_wdata;
-              du_stall_i = CORE_CTRL;
-           end
-           nxt_state = STATE_ACK;
-         end //STATE_STALL_CPU
-       STATE_SPR_REQ: begin
-          if (reg_write == 0) begin
-             du_we_i = 0;
-          end else begin
-             du_we_o = 1;
-          end
-          nxt_state = STATE_REG_ADDR;
-        end //STATE_SPR_REQ
-       STATE_SPR_ADDR: begin
-          if (du_ack_o == 1) begin
-             du_addr_i = spr_reg_addr;
-             if (reg_write == 0) begin
-                nxt_state = STATE_READ;
-             end else begin
-                nxt_state = STATE_WRITE;
-             end
-          end
-        end //STATE_SPR_ADDR
-       STATE_SPR_READ: begin 
-          if (du_ack_o == 1) begin
-             reg_rdata = du_dat_o;  //Here, reg_rdata should be 32 bits wide
-             nxt_state = STATE_ACK;
-          end
-        end //STATE_SPR_READ         
-       STATE_SPR_WRITE: begin
-	  if (du_ack_o == 1) begin
-            du_dat_i = reg_wdata;  //Here, reg_wdata should be 32 bits wide
+            end
+         end //STATE_ADDR
+      STATE_STALL_CPU: begin
+            if (reg_write == 0) begin
+               reg_rdata = core_ctrl;
+            end else begin
+               core_ctrl = reg_wdata;
+               du_stall_i = core_ctrl;
+            end
             nxt_state = STATE_ACK;
-          end
-        end //STATE_SPR_WRITE            
-       STATE_ACK: begin
-           if (du_ack_o == 1) begin
-            reg_ack = 1;
-           end
-        end //STATE_ACK               
-   end //always_comb           
+         end //STATE_STALL_CPU
+      STATE_SPR_REQ: begin
+            if (reg_write == 0) begin
+               du_we_i = 0;
+            end else begin
+               du_we_i = 1;
+            end
+            nxt_state = STATE_SPR_ADDR;
+         end //STATE_SPR_REQ
+      STATE_SPR_ADDR: begin
+            if (du_ack_o == 1) begin
+               du_adr_i = spr_reg_addr;
+               if (reg_write == 0) begin
+                  nxt_state = STATE_SPR_READ;
+               end else begin
+                  nxt_state = STATE_SPR_WRITE;
+               end
+            end
+         end //STATE_SPR_ADDR
+      STATE_SPR_READ: begin 
+            if (du_ack_o == 1) begin
+               reg_rdata = du_dat_o;  //Here, reg_rdata should be 32 bits wide
+               nxt_state = STATE_ACK;
+            end
+         end //STATE_SPR_READ         
+      STATE_SPR_WRITE: begin
+	    if (du_ack_o == 1) begin
+               du_dat_i = reg_wdata;  //Here, reg_wdata should be 32 bits wide
+               nxt_state = STATE_ACK;
+            end
+         end //STATE_SPR_WRITE            
+      STATE_ACK: begin
+            if (du_ack_o == 1) begin
+               reg_ack = 1;
+            end
+	    nxt_state = STATE_INACTIVE;
+         end //STATE_ACK               
+     endcase
+   end  //always_comb           
                        
 endmodule // osd_cdm
+
